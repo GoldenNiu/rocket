@@ -114,7 +114,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   io.cpu.resp.bits.pc := s2_pc
   io.cpu.npc := Mux(io.cpu.req.valid, io.cpu.req.bits.pc, npc)
 
-  require(fetchWidth * coreInstBytes <= rowBytes)
+  require(fetchWidth * coreInstBytes <= rowBytes && isPow2(fetchWidth))
   val fetch_data = icache.io.resp.bits.datablock >> (s2_pc.extract(log2Up(rowBytes)-1,log2Up(fetchWidth*coreInstBytes)) << log2Up(fetchWidth*coreInstBits))
 
   for (i <- 0 until fetchWidth) {

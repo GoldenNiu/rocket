@@ -19,6 +19,7 @@ case object UseVM extends Field[Boolean]
 case object UseUser extends Field[Boolean]
 case object UseDebug extends Field[Boolean]
 case object UseAtomics extends Field[Boolean]
+case object UseCompressed extends Field[Boolean]
 case object UsePerfCounters extends Field[Boolean]
 case object FastLoadWord extends Field[Boolean]
 case object FastLoadByte extends Field[Boolean]
@@ -42,6 +43,7 @@ trait HasCoreParameters extends HasAddrMapParameters {
   val usingDebug = p(UseDebug)
   val usingFPU = p(UseFPU)
   val usingAtomics = p(UseAtomics)
+  val usingCompressed = p(UseCompressed)
   val usingFDivSqrt = p(FDivSqrt)
   val usingRoCC = !p(BuildRoCC).isEmpty
   val mulUnroll = p(MulUnroll)
@@ -64,6 +66,10 @@ trait HasCoreParameters extends HasAddrMapParameters {
     else p(BuildRoCC).flatMap(_.csrs)
   val nRoccCsrs = p(RoccNCSRs)
   val nCores = p(NTiles)
+
+  // fetchWidth doubled, but coreInstBytes halved, for RVC
+  require(fetchWidth == retireWidth * (4 / coreInstBytes))
+  require(retireWidth == 1)
 
   // Print out log of committed instructions and their writeback values.
   // Requires post-processing due to out-of-order writebacks.
@@ -195,9 +201,58 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   val take_pc = take_pc_mem_wb
 
   // decode stage
-  val id_pc = io.imem.resp.bits.pc
-  val id_inst = io.imem.resp.bits.data(0).toBits; require(fetchWidth == 1)
+  val id_fire = Wire(Vec(fetchWidth, Bool()))
+  val (id_valid, id, id_inst) =
+    if (fetchWidth > 1) {
+      val n = fetchWidth - 1
+      val pc = io.imem.resp.bits.pc
+      val nValid = Reg(init=UInt(0, log2Ceil(fetchWidth)))
+      val buf = Reg(UInt(width = n*coreInstBits))
+      //val bufPC = Reg(pc)
+
+      def shiftInsnLeft(in: UInt, dist: UInt) = {
+        val r = in.getWidth/coreInstBits
+        require(in.getWidth % coreInstBits == 0 && isPow2(r))
+        val data = Cat(Fill(in.getWidth/coreInstBits, in(r*coreInstBits-1, (r-1)*coreInstBits)), in)
+        data << (dist << log2Ceil(coreInstBits))
+      }
+
+      def shiftInsnRight(in: UInt, dist: UInt) = {
+        val r = in.getWidth/coreInstBits
+        require(in.getWidth % coreInstBits == 0 && isPow2(r))
+        val data = Cat(Fill(in.getWidth/coreInstBits, in(r*coreInstBits-1, (r-1)*coreInstBits)), in)
+        data >> (dist << log2Ceil(coreInstBits))
+      }
+
+      // TODO fill these in, and work out all cases
+      val pcWordBits = pc(log2Ceil(fetchWidth*coreInstBytes)-1, log2Ceil(coreInstBytes))
+      val nBufUsed = UInt(0)
+      val nIC = UInt(fetchWidth) - pcWordBits
+      val nICUsed = nIC
+
+      val icShiftAmt = (fetchWidth + nValid - pcWordBits)(log2Ceil(fetchWidth), 0)
+      val icData = shiftInsnLeft(io.imem.resp.bits.data.toBits << (fetchWidth*coreInstBits), icShiftAmt)
+        .extract(3*fetchWidth*coreInstBits-1, 2*fetchWidth*coreInstBits)
+      val icMask = (~UInt(0, fetchWidth*coreInstBits) << (nValid << log2Ceil(coreInstBits)))(fetchWidth*coreInstBits-1,0)
+
+      nValid := (nValid - nBufUsed) + (nIC - nICUsed)
+      when (nBufUsed > 0) {
+        if (n > 1) when (nBufUsed < nValid) {
+          val shiftedBuf = buf << (nBufUsed << log2Up(coreInstBits))
+          buf := Cat(buf(n*coreInstBits-1, (n-1)*coreInstBits), shiftedBuf((n-1)*coreInstBits-1, 0))
+          io.imem.resp.ready := false
+        }
+      }
+
+      io.imem.resp.ready := id_fire(0)
+      (io.imem.resp.valid, io.imem.resp.bits, icData | buf & ~icMask)
+    } else {
+      io.imem.resp.ready := id_fire(0)
+      (io.imem.resp.valid, io.imem.resp.bits, io.imem.resp.bits.data.toBits)
+    }
+
   val id_ctrl = Wire(new IntCtrlSigs()).decode(id_inst, decode_table)
+  val id_rvc = if (usingCompressed) id_inst(1,0) =/= UInt(3) else Bool(false)
   val id_raddr3 = id_inst(31,27)
   val id_raddr2 = id_inst(24,20)
   val id_raddr1 = id_inst(19,15)
@@ -239,14 +294,14 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   val bpu = Module(new BreakpointUnit)
   bpu.io.status := csr.io.status
   bpu.io.bp := csr.io.bp
-  bpu.io.pc := id_pc
+  bpu.io.pc := id.pc
   bpu.io.ea := mem_reg_wdata
 
   val (id_xcpt, id_cause) = checkExceptions(List(
-    (csr.io.interrupt,          csr.io.interrupt_cause),
-    (bpu.io.xcpt_if,            UInt(Causes.breakpoint)),
-    (io.imem.resp.bits.xcpt_if, UInt(Causes.fault_fetch)),
-    (id_illegal_insn,           UInt(Causes.illegal_instruction))))
+    (csr.io.interrupt, csr.io.interrupt_cause),
+    (bpu.io.xcpt_if,   UInt(Causes.breakpoint)),
+    (id.xcpt_if,       UInt(Causes.fault_fetch)),
+    (id_illegal_insn,  UInt(Causes.illegal_instruction))))
 
   val dcache_bypass_data =
     if (fastLoadByte) io.dmem.resp.bits.data
@@ -299,9 +354,9 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   div.io.req.bits.tag := ex_waddr
 
   ex_reg_valid := !ctrl_killd
-  ex_reg_replay := !take_pc && io.imem.resp.valid && io.imem.resp.bits.replay
+  ex_reg_replay := !take_pc && id_valid && id.replay
   ex_reg_xcpt := !ctrl_killd && id_xcpt
-  ex_reg_xcpt_interrupt := !take_pc && io.imem.resp.valid && csr.io.interrupt
+  ex_reg_xcpt_interrupt := !take_pc && id_valid && csr.io.interrupt
   when (id_xcpt) { ex_reg_cause := id_cause }
 
   when (!ctrl_killd) {
@@ -328,9 +383,9 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
       }
     }
   }
-  when (!ctrl_killd || csr.io.interrupt || io.imem.resp.bits.replay) {
+  when (!ctrl_killd || csr.io.interrupt || id.replay) {
     ex_reg_inst := id_inst
-    ex_reg_pc := id_pc
+    ex_reg_pc := id.pc
   }
 
   // replay inst in ex stage?
@@ -355,7 +410,7 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
     Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst), SInt(4)))
   val mem_int_wdata = Mux(mem_ctrl.jalr, mem_br_target, mem_reg_wdata.toSInt).toUInt
   val mem_npc = (Mux(mem_ctrl.jalr, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).toSInt, mem_br_target) & SInt(-2)).toUInt
-  val mem_wrong_npc = Mux(ex_pc_valid, mem_npc =/= ex_reg_pc, Mux(io.imem.resp.valid, mem_npc =/= id_pc, Bool(true)))
+  val mem_wrong_npc = Mux(ex_pc_valid, mem_npc =/= ex_reg_pc, Mux(id_valid, mem_npc =/= id.pc, Bool(true)))
   val mem_npc_misaligned = mem_npc(1)
   val mem_cfi = mem_ctrl.branch || mem_ctrl.jalr || mem_ctrl.jal
   val mem_cfi_taken = (mem_ctrl.branch && mem_br_taken) || mem_ctrl.jalr || mem_ctrl.jal
@@ -541,7 +596,7 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
     id_ctrl.rocc && rocc_blocked || // reduce activity while RoCC is busy
     id_do_fence ||
     csr.io.csr_stall
-  ctrl_killd := !io.imem.resp.valid || io.imem.resp.bits.replay || take_pc || ctrl_stalld || csr.io.interrupt
+  ctrl_killd := !id_valid || id.replay || take_pc || ctrl_stalld || csr.io.interrupt
 
   io.imem.req.valid := take_pc
   io.imem.req.bits.speculative := !take_pc_wb
@@ -551,7 +606,10 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
                                 mem_npc)).toUInt // mispredicted branch
   io.imem.flush_icache := wb_reg_valid && wb_ctrl.fence_i && !io.dmem.s2_nack
   io.imem.flush_tlb := csr.io.fatc
-  io.imem.resp.ready := !ctrl_stalld || csr.io.interrupt || take_pc_mem
+
+  id_fire(0) := !ctrl_stalld || csr.io.interrupt || take_pc_mem
+  if (usingCompressed)
+    id_fire(1) := id_fire(0) && !id_rvc
 
   io.imem.btb_update.valid := mem_reg_valid && !take_pc_wb && mem_wrong_npc
   io.imem.btb_update.bits.isValid := mem_cfi
