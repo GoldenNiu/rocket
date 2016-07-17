@@ -88,7 +88,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
       s2_btb_resp_valid := btb.io.resp.valid
       s2_btb_resp_bits := btb.io.resp.bits
     }
-    when (btb.io.resp.bits.taken) {
+    when (btb.io.resp.valid && btb.io.resp.bits.taken) {
       predicted_npc := btb.io.resp.bits.target.sextTo(vaddrBitsExtended)
       s0_same_block := Bool(false)
     }

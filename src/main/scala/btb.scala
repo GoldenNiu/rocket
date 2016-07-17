@@ -234,7 +234,7 @@ class BTB(implicit p: Parameters) extends BtbModule {
   }
 
   io.resp.valid := hits.orR
-  io.resp.bits.taken := io.resp.valid
+  io.resp.bits.taken := true
   io.resp.bits.target := Cat(Mux1H(Mux1H(hitsVec, tgtPagesOH), pages), Mux1H(hitsVec, tgts) << log2Up(coreInstBytes))
   io.resp.bits.entry := OHToUInt(hits)
   io.resp.bits.bridx := Mux1H(hitsVec, brIdx)
