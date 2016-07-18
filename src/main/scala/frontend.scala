@@ -79,7 +79,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   if (p(BtbKey).nEntries > 0) {
     val btb = Module(new BTB)
     btb.io.req.valid := false
-    btb.io.req.bits.addr := s1_pc
+    btb.io.req.bits.addr := s1_pc_
     btb.io.btb_update := io.cpu.btb_update
     btb.io.bht_update := io.cpu.bht_update
     btb.io.ras_update := io.cpu.ras_update

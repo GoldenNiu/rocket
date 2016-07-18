@@ -362,8 +362,7 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   val mem_misprediction =
     if (p(BtbKey).nEntries == 0) mem_cfi_taken
     else mem_wrong_npc
-  val want_take_pc_mem = mem_reg_valid && (mem_misprediction || mem_reg_flush_pipe)
-  take_pc_mem := want_take_pc_mem && !mem_npc_misaligned
+  take_pc_mem := mem_reg_valid && (mem_misprediction || mem_reg_flush_pipe)
 
   mem_reg_valid := !ctrl_killx
   mem_reg_replay := !take_pc_mem_wb && replay_ex
@@ -389,13 +388,13 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   }
 
   val (mem_new_xcpt, mem_new_cause) = checkExceptions(List(
-    (mem_reg_load && bpu.io.xcpt_ld,         UInt(Causes.breakpoint)),
-    (mem_reg_store && bpu.io.xcpt_st,        UInt(Causes.breakpoint)),
-    (want_take_pc_mem && mem_npc_misaligned, UInt(Causes.misaligned_fetch)),
-    (mem_ctrl.mem && io.dmem.xcpt.ma.st,     UInt(Causes.misaligned_store)),
-    (mem_ctrl.mem && io.dmem.xcpt.ma.ld,     UInt(Causes.misaligned_load)),
-    (mem_ctrl.mem && io.dmem.xcpt.pf.st,     UInt(Causes.fault_store)),
-    (mem_ctrl.mem && io.dmem.xcpt.pf.ld,     UInt(Causes.fault_load))))
+    (mem_reg_load && bpu.io.xcpt_ld,     UInt(Causes.breakpoint)),
+    (mem_reg_store && bpu.io.xcpt_st,    UInt(Causes.breakpoint)),
+    (take_pc_mem && mem_npc_misaligned,  UInt(Causes.misaligned_fetch)),
+    (mem_ctrl.mem && io.dmem.xcpt.ma.st, UInt(Causes.misaligned_store)),
+    (mem_ctrl.mem && io.dmem.xcpt.ma.ld, UInt(Causes.misaligned_load)),
+    (mem_ctrl.mem && io.dmem.xcpt.pf.st, UInt(Causes.fault_store)),
+    (mem_ctrl.mem && io.dmem.xcpt.pf.ld, UInt(Causes.fault_load))))
 
   val (mem_xcpt, mem_cause) = checkExceptions(List(
     (mem_reg_xcpt_interrupt || mem_reg_xcpt, mem_reg_cause),
@@ -554,7 +553,8 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   io.imem.flush_tlb := csr.io.fatc
   io.imem.resp.ready := !ctrl_stalld || csr.io.interrupt || take_pc_mem
 
-  io.imem.btb_update.valid := mem_reg_valid && !mem_npc_misaligned && mem_wrong_npc && mem_cfi_taken && !take_pc_wb
+  io.imem.btb_update.valid := mem_reg_valid && !take_pc_wb && mem_wrong_npc
+  io.imem.btb_update.bits.isValid := mem_cfi
   io.imem.btb_update.bits.isJump := mem_ctrl.jal || mem_ctrl.jalr
   io.imem.btb_update.bits.isReturn := mem_ctrl.jalr && mem_reg_inst(19,15) === BitPat("b00??1")
   io.imem.btb_update.bits.pc := mem_reg_pc
@@ -563,13 +563,13 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   io.imem.btb_update.bits.prediction.valid := mem_reg_btb_hit
   io.imem.btb_update.bits.prediction.bits := mem_reg_btb_resp
 
-  io.imem.bht_update.valid := mem_reg_valid && mem_ctrl.branch && !take_pc_wb
+  io.imem.bht_update.valid := mem_reg_valid && !take_pc_wb && mem_ctrl.branch
   io.imem.bht_update.bits.pc := mem_reg_pc
   io.imem.bht_update.bits.taken := mem_br_taken
   io.imem.bht_update.bits.mispredict := mem_wrong_npc
   io.imem.bht_update.bits.prediction := io.imem.btb_update.bits.prediction
 
-  io.imem.ras_update.valid := mem_reg_valid && io.imem.btb_update.bits.isJump && !mem_npc_misaligned && !take_pc_wb
+  io.imem.ras_update.valid := mem_reg_valid && !take_pc_wb
   io.imem.ras_update.bits.returnAddr := mem_int_wdata
   io.imem.ras_update.bits.isCall := mem_ctrl.wxd && mem_waddr(0)
   io.imem.ras_update.bits.isReturn := io.imem.btb_update.bits.isReturn
