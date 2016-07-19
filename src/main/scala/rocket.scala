@@ -188,7 +188,6 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
 
   val wb_reg_valid           = Reg(Bool())
   val wb_reg_xcpt            = Reg(Bool())
-  val wb_reg_mem_xcpt        = Reg(Bool())
   val wb_reg_replay          = Reg(Bool())
   val wb_reg_cause           = Reg(UInt())
   val wb_reg_pc = Reg(UInt())
@@ -379,6 +378,12 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   when (!ctrl_killd) {
     ex_ctrl := id_ctrl
     ex_ctrl.csr := id_csr
+    when (id_xcpt) {
+      // pass PC down ALU writeback pipeline for badaddr
+      ex_ctrl.alu_fn := ALU.FN_ADD
+      ex_ctrl.sel_alu1 := A1_PC
+      ex_ctrl.sel_alu2 := A2_ZERO
+    }
     ex_reg_btb_hit := io.imem.btb_resp.valid
     when (io.imem.btb_resp.valid) { ex_reg_btb_resp := io.imem.btb_resp.bits }
     ex_reg_flush_pipe := id_ctrl.fence_i || id_csr_flush || csr.io.singleStep
@@ -425,10 +430,10 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   val mem_br_target = mem_reg_pc.toSInt +
     Mux(mem_ctrl.branch && mem_br_taken, ImmGen(IMM_SB, mem_reg_inst),
     Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst), SInt(4)))
-  val mem_int_wdata = Mux(mem_ctrl.jalr, mem_br_target, mem_reg_wdata.toSInt).toUInt
   val mem_npc = (Mux(mem_ctrl.jalr, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).toSInt, mem_br_target) & SInt(-2)).toUInt
   val mem_wrong_npc = Mux(ex_pc_valid, mem_npc =/= ex_reg_pc, Mux(id_valid, mem_npc =/= id.pc, Bool(true)))
   val mem_npc_misaligned = if (usingCompressed) Bool(false) else mem_npc(1)
+  val mem_int_wdata = Mux(!mem_reg_xcpt && (mem_ctrl.jalr ^ mem_npc_misaligned), mem_br_target, mem_reg_wdata.toSInt).toUInt
   val mem_cfi = mem_ctrl.branch || mem_ctrl.jalr || mem_ctrl.jal
   val mem_cfi_taken = (mem_ctrl.branch && mem_br_taken) || mem_ctrl.jalr || mem_ctrl.jal
   val mem_misprediction =
@@ -462,7 +467,7 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   val (mem_new_xcpt, mem_new_cause) = checkExceptions(List(
     (mem_reg_load && bpu.io.xcpt_ld,     UInt(Causes.breakpoint)),
     (mem_reg_store && bpu.io.xcpt_st,    UInt(Causes.breakpoint)),
-    (take_pc_mem && mem_npc_misaligned,  UInt(Causes.misaligned_fetch)),
+    (mem_npc_misaligned,                 UInt(Causes.misaligned_fetch)),
     (mem_ctrl.mem && io.dmem.xcpt.ma.st, UInt(Causes.misaligned_store)),
     (mem_ctrl.mem && io.dmem.xcpt.ma.ld, UInt(Causes.misaligned_load)),
     (mem_ctrl.mem && io.dmem.xcpt.pf.st, UInt(Causes.fault_store)),
@@ -483,11 +488,10 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   wb_reg_valid := !ctrl_killm
   wb_reg_replay := replay_mem && !take_pc_wb
   wb_reg_xcpt := mem_xcpt && !take_pc_wb
-  wb_reg_mem_xcpt := mem_reg_valid && mem_new_xcpt && !(mem_reg_xcpt_interrupt || mem_reg_xcpt)
   when (mem_xcpt) { wb_reg_cause := mem_cause }
   when (mem_reg_valid || mem_reg_replay || mem_reg_xcpt_interrupt) {
     wb_ctrl := mem_ctrl
-    wb_reg_wdata := Mux(mem_ctrl.fp && mem_ctrl.wxd, io.fpu.toint_data, mem_int_wdata)
+    wb_reg_wdata := Mux(!mem_reg_xcpt && mem_ctrl.fp && mem_ctrl.wxd, io.fpu.toint_data, mem_int_wdata)
     when (mem_ctrl.rocc) {
       wb_reg_rs2 := mem_reg_rs2
     }
@@ -550,7 +554,7 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   io.rocc.csr <> csr.io.rocc.csr
   csr.io.rocc.interrupt <> io.rocc.interrupt
   csr.io.pc := wb_reg_pc
-  csr.io.badaddr := Mux(wb_reg_mem_xcpt, encodeVirtualAddress(wb_reg_wdata, wb_reg_wdata), wb_reg_pc)
+  csr.io.badaddr := encodeVirtualAddress(wb_reg_wdata, wb_reg_wdata)
   io.ptw.ptbr := csr.io.ptbr
   io.ptw.invalidate := csr.io.fatc
   io.ptw.status := csr.io.status
