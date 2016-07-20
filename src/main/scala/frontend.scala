@@ -50,22 +50,31 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   val s2_btb_resp_bits = Reg(new BTBResp)
   val s2_xcpt_if = Reg(init=Bool(false))
   val s2_speculative = Reg(init=Bool(false))
+  val s2_cacheable = Reg(init=Bool(false))
 
   val ntpc = ~(~s1_pc | (coreInstBytes*fetchWidth-1)) + UInt(coreInstBytes*fetchWidth)
+  val ntpc_same_block = (ntpc & rowBytes) === (s1_pc & rowBytes)
   val predicted_npc = Wire(init = ntpc)
+  val predicted_taken = Wire(init = Bool(false))
   val icmiss = s2_valid && !icache.io.resp.valid
   val npc = Mux(icmiss, s2_pc, predicted_npc).toUInt
-  val s0_same_block = Wire(init = !icmiss && !io.cpu.req.valid && ((ntpc & rowBytes) === (s1_pc & rowBytes)))
+  val s0_same_block = !predicted_taken && !icmiss && !io.cpu.req.valid && ntpc_same_block
 
   val stall = io.cpu.resp.valid && !io.cpu.resp.ready
   when (!stall) {
     s1_same_block := s0_same_block && !tlb.io.resp.miss
     s1_pc_ := npc
-    s1_speculative := Mux(icmiss, s2_speculative, true)
+    // consider RVC fetches across blocks to be non-speculative if the first
+    // part was non-speculative
+    val s0_speculative =
+      if (usingCompressed) s1_speculative || s2_valid && !s2_speculative || predicted_taken
+      else Bool(true)
+    s1_speculative := Mux(icmiss, s2_speculative, s0_speculative)
     s2_valid := !icmiss
     when (!icmiss) {
       s2_pc := s1_pc
-      s2_speculative := s1_speculative && !tlb.io.resp.cacheable
+      s2_speculative := s1_speculative
+      s2_cacheable := tlb.io.resp.cacheable
       s2_xcpt_if := tlb.io.resp.xcpt_if
     }
   }
@@ -90,7 +99,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
     }
     when (btb.io.resp.valid && btb.io.resp.bits.taken) {
       predicted_npc := btb.io.resp.bits.target.sextTo(vaddrBitsExtended)
-      s0_same_block := Bool(false)
+      predicted_taken := Bool(true)
     }
   }
 
@@ -107,10 +116,10 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   icache.io.invalidate := io.cpu.flush_icache
   icache.io.s1_ppn := tlb.io.resp.ppn
   icache.io.s1_kill := io.cpu.req.valid || tlb.io.resp.miss || tlb.io.resp.xcpt_if || icmiss || io.cpu.flush_tlb
-  icache.io.s2_kill := s2_speculative
+  icache.io.s2_kill := s2_speculative && !s2_cacheable
   icache.io.resp.ready := !stall && !s1_same_block
 
-  io.cpu.resp.valid := s2_valid && (icache.io.resp.valid || s2_speculative || s2_xcpt_if)
+  io.cpu.resp.valid := s2_valid && (icache.io.resp.valid || icache.io.s2_kill || s2_xcpt_if)
   io.cpu.resp.bits.pc := s2_pc
   io.cpu.npc := Mux(io.cpu.req.valid, io.cpu.req.bits.pc, npc)
 
@@ -123,7 +132,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
 
   io.cpu.resp.bits.mask := UInt((1 << fetchWidth)-1) << s2_pc.extract(log2Up(fetchWidth)+log2Up(coreInstBytes)-1, log2Up(coreInstBytes))
   io.cpu.resp.bits.xcpt_if := s2_xcpt_if
-  io.cpu.resp.bits.replay := s2_speculative && !icache.io.resp.valid && !s2_xcpt_if
+  io.cpu.resp.bits.replay := icache.io.s2_kill && !icache.io.resp.valid && !s2_xcpt_if
 
   io.cpu.btb_resp.valid := s2_btb_resp_valid
   io.cpu.btb_resp.bits := s2_btb_resp_bits
