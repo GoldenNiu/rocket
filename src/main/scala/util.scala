@@ -24,6 +24,10 @@ object Util {
       if (hi == lo-1) UInt(0)
       else x(hi, lo)
     }
+
+    def isOneOf(s: Seq[UInt]): Bool = s.map(x === _).reduce(_||_)
+
+    def isOneOf(u1: UInt, u2: UInt*): Bool = isOneOf(u1 +: u2.toSeq)
   }
 
   implicit def booleanToIntConv(x: Boolean) = new AnyRef {
