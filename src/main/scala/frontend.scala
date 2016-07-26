@@ -11,8 +11,9 @@ class FrontendReq(implicit p: Parameters) extends CoreBundle()(p) {
 }
 
 class FrontendResp(implicit p: Parameters) extends CoreBundle()(p) {
+  val btb = Valid(new BTBResp)
   val pc = UInt(width = vaddrBitsExtended)  // ID stage PC
-  val data = Vec(fetchWidth, Bits(width = coreInstBits))
+  val data = UInt(width = fetchWidth * coreInstBits)
   val mask = Bits(width = fetchWidth)
   val xcpt_if = Bool()
   val replay = Bool()
@@ -21,7 +22,6 @@ class FrontendResp(implicit p: Parameters) extends CoreBundle()(p) {
 class FrontendIO(implicit p: Parameters) extends CoreBundle()(p) {
   val req = Valid(new FrontendReq)
   val resp = Decoupled(new FrontendResp).flip
-  val btb_resp = Valid(new BTBResp).flip
   val btb_update = Valid(new BTBUpdate)
   val bht_update = Valid(new BHTUpdate)
   val ras_update = Valid(new RASUpdate)
@@ -124,16 +124,10 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   io.cpu.npc := Mux(io.cpu.req.valid, io.cpu.req.bits.pc, npc)
 
   require(fetchWidth * coreInstBytes <= rowBytes && isPow2(fetchWidth))
-  val fetch_data = icache.io.resp.bits.datablock >> (s2_pc.extract(log2Up(rowBytes)-1,log2Up(fetchWidth*coreInstBytes)) << log2Up(fetchWidth*coreInstBits))
-
-  for (i <- 0 until fetchWidth) {
-    io.cpu.resp.bits.data(i) := fetch_data(i*coreInstBits+coreInstBits-1, i*coreInstBits)
-  }
-
+  io.cpu.resp.bits.data := icache.io.resp.bits.datablock >> (s2_pc.extract(log2Up(rowBytes)-1,log2Up(fetchWidth*coreInstBytes)) << log2Up(fetchWidth*coreInstBits))
   io.cpu.resp.bits.mask := UInt((1 << fetchWidth)-1) << s2_pc.extract(log2Up(fetchWidth)+log2Up(coreInstBytes)-1, log2Up(coreInstBytes))
   io.cpu.resp.bits.xcpt_if := s2_xcpt_if
   io.cpu.resp.bits.replay := icache.io.s2_kill && !icache.io.resp.valid && !s2_xcpt_if
-
-  io.cpu.btb_resp.valid := s2_btb_resp_valid
-  io.cpu.btb_resp.bits := s2_btb_resp_bits
+  io.cpu.resp.bits.btb.valid := s2_btb_resp_valid
+  io.cpu.resp.bits.btb.bits := s2_btb_resp_bits
 }
