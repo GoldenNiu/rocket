@@ -203,8 +203,6 @@ class BTB(implicit p: Parameters) extends BtbModule {
   }
 
   when (r_btb_update.valid) {
-    assert(io.req.bits.addr === r_btb_update.bits.target, "BTB request != I$ target")
-
     val waddr = Mux(updateHit, updateHitAddr, nextRepl)
     val mask = UIntToOH(waddr)
     idxs(waddr) := r_btb_update.bits.pc(matchBits-1, log2Up(coreInstBytes))

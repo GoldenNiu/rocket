@@ -28,6 +28,23 @@ object Util {
     def isOneOf(s: Seq[UInt]): Bool = s.map(x === _).reduce(_||_)
 
     def isOneOf(u1: UInt, u2: UInt*): Bool = isOneOf(u1 +: u2.toSeq)
+
+    def popCountAtLeast(k: Int): Bool = k match {
+      case 0 => Bool(true)
+      case 1 => x.orR
+      case 2 =>
+        def recurse(pos: Int, len: Int): (Bool, Bool) = {
+          if (len == 1) {
+            (x(pos), Bool(false))
+          } else {
+            val (l1, l2) = recurse(pos, len/2)
+            val (r1, r2) = recurse(pos + len/2, len - len/2)
+            (l1 || r1, l2 || r2 || (l1 && r1))
+          }
+        }
+        recurse(0, x.getWidth)._2
+      case _ => PopCount(x) >= k
+    }
   }
 
   implicit def booleanToIntConv(x: Boolean) = new AnyRef {
@@ -46,6 +63,10 @@ object Util {
     }
 
     def toBits(): UInt = Cat(x.map(_.toBits).reverse)
+  }
+
+  implicit class Unzip6[A,B,C,D,E,F](val x: Seq[(A,B,C,D,E,F)]) extends AnyVal {
+    def unzip6 = (x.map(_._1), x.map(_._2), x.map(_._3), x.map(_._4), x.map(_._5), x.map(_._6))
   }
 
   def minUInt(values: Seq[UInt]): UInt =
