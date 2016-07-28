@@ -516,7 +516,7 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
                               (io.fpu.dec.ren3, id_raddr3),
                               (io.fpu.dec.wen, id_waddr))
 
-  val sboard = new Scoreboard(32)
+  val sboard = new Scoreboard(32, true)
   sboard.clear(ll_wen, ll_waddr)
   val id_sboard_hazard = checkHazards(hazard_targets, sboard.read _)
   sboard.set(wb_set_sboard && wb_wen, wb_waddr)
@@ -682,21 +682,22 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
     Cat(msb, ea(vaddrBits-1,0))
   }
 
-  class Scoreboard(n: Int)
+  class Scoreboard(n: Int, zero: Boolean = false)
   {
     def set(en: Bool, addr: UInt): Unit = update(en, _next | mask(en, addr))
     def clear(en: Bool, addr: UInt): Unit = update(en, _next & ~mask(en, addr))
     def read(addr: UInt): Bool = r(addr)
     def readBypassed(addr: UInt): Bool = _next(addr)
 
-    private val r = Reg(init=Bits(0, n))
+    private val _r = Reg(init=Bits(0, n))
+    private val r = if (zero) (_r >> 1 << 1) else _r
     private var _next = r
     private var ens = Bool(false)
     private def mask(en: Bool, addr: UInt) = Mux(en, UInt(1) << addr, UInt(0))
     private def update(en: Bool, update: UInt) = {
       _next = update
       ens = ens || en
-      when (ens) { r := _next }
+      when (ens) { _r := _next }
     }
   }
 }
