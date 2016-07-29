@@ -203,15 +203,16 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
 
   // decode stage
   val ibuf = Module(new IBuf)
-  val id_inst = ibuf.io.inst.map(_.bits.bits)
+  val id_expanded_inst = ibuf.io.inst.map(_.bits.inst)
+  val id_inst = id_expanded_inst.map(_.bits)
   ibuf.io.imem <> io.imem.resp
   ibuf.io.kill := take_pc
 
   val id_ctrl = Wire(new IntCtrlSigs()).decode(id_inst(0), decode_table)
-  val id_raddr3 = id_inst(0)(31,27)
-  val id_raddr2 = id_inst(0)(24,20)
-  val id_raddr1 = id_inst(0)(19,15)
-  val id_waddr  = id_inst(0)(11,7)
+  val id_raddr3 = id_expanded_inst(0).rs3
+  val id_raddr2 = id_expanded_inst(0).rs2
+  val id_raddr1 = id_expanded_inst(0).rs1
+  val id_waddr  = id_expanded_inst(0).rd
   val id_load_use = Wire(Bool())
   val id_reg_fence = Reg(init=Bool(false))
   val id_ren = IndexedSeq(id_ctrl.rxs1, id_ctrl.rxs2)

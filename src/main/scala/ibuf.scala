@@ -7,13 +7,13 @@ import Util._
 import cde.{Parameters, Field}
 import junctions._
 
-class Inst(implicit val p: Parameters) extends ParameterizedBundle with HasCoreParameters {
+class Instruction(implicit val p: Parameters) extends ParameterizedBundle with HasCoreParameters {
   val pf0 = Bool() // page fault on first half of instruction
   val pf1 = Bool() // page fault on second half of instruction
   val replay = Bool()
   val btb_hit = Bool()
   val rvc = Bool()
-  val bits = UInt(width = 32)
+  val inst = new ExpandedInstruction
   require(coreInstBits == (if (usingCompressed) 16 else 32))
 }
 
@@ -23,7 +23,7 @@ class IBuf(implicit p: Parameters) extends CoreModule {
     val kill = Bool(INPUT)
     val pc = UInt(width = vaddrBitsExtended)
     val btb_resp = new BTBResp().asOutput
-    val inst = Vec(retireWidth, Decoupled(new Inst))
+    val inst = Vec(retireWidth, Decoupled(new Instruction))
   }
 
   // This module is meant to be more general, but it's not there yet
@@ -90,12 +90,12 @@ class IBuf(implicit p: Parameters) extends CoreModule {
   io.pc := Mux(nBufValid > 0, buf.pc, io.imem.bits.pc)
   expand(0, 0, inst)
 
-  def expand(i: Int, j: UInt, curInst: UInt): Unit = {
-    if (i < retireWidth && usingCompressed) {
-      val exp = Module(new RVCExpander)
-      exp.io.in := curInst
-      (exp.io.out, exp.io.rvc)
+  def expand(i: Int, j: UInt, curInst: UInt): Unit = if (i < retireWidth) {
+    val exp = Module(new RVCExpander)
+    exp.io.in := curInst
+    io.inst(i).bits.inst := exp.io.out
 
+    if (usingCompressed) {
       val replay = ic_replay(j) || (!exp.io.rvc && (btbHitMask(j) || ic_replay(j+1)))
       io.inst(i).valid := valid(j) && (exp.io.rvc || valid(j+1) || xcpt_if(j+1) || replay)
       io.inst(i).bits.pf0 := xcpt_if(j)
@@ -103,19 +103,17 @@ class IBuf(implicit p: Parameters) extends CoreModule {
       io.inst(i).bits.replay := replay
       io.inst(i).bits.btb_hit := btbHitMask(j) || (!exp.io.rvc && btbHitMask(j+1))
       io.inst(i).bits.rvc := exp.io.rvc
-      io.inst(i).bits.bits := exp.io.out
 
       when (io.inst(i).fire()) { nReady := Mux(exp.io.rvc, j+1, j+2) }
 
       expand(i+1, Mux(exp.io.rvc, j+1, j+2), Mux(exp.io.rvc, curInst >> 16, curInst >> 32))
-    } else if (i < retireWidth) {
+    } else {
       when (io.inst(i).ready) { nReady := i+1 }
       io.inst(i).valid := valid(i)
       io.inst(i).bits.pf0 := xcpt_if(i)
       io.inst(i).bits.pf1 := false
       io.inst(i).bits.replay := ic_replay(i)
       io.inst(i).bits.rvc := false
-      io.inst(i).bits.bits := curInst
       io.inst(i).bits.btb_hit := btbHitMask(i)
 
       expand(i+1, null, curInst >> 32)
