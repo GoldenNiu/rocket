@@ -63,7 +63,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   val stall = io.cpu.resp.valid && !io.cpu.resp.ready
   when (!stall) {
     s1_same_block := s0_same_block && !tlb.io.resp.miss
-    s1_pc_ := npc
+    s1_pc_ := io.cpu.npc
     // consider RVC fetches across blocks to be non-speculative if the first
     // part was non-speculative
     val s0_speculative =
@@ -80,7 +80,7 @@ class Frontend(implicit p: Parameters) extends CoreModule()(p) with HasL1CachePa
   }
   when (io.cpu.req.valid) {
     s1_same_block := Bool(false)
-    s1_pc_ := io.cpu.req.bits.pc
+    s1_pc_ := io.cpu.npc
     s1_speculative := io.cpu.req.bits.speculative
     s2_valid := Bool(false)
   }
